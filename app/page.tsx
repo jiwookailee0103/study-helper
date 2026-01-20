@@ -71,8 +71,9 @@ export default function Home() {
         return;
       }
 
-      const eq0 = nerdamer(`${L}-(${R})`).expand().simplify().toString();
-      const sols = nerdamer.solve(eq0, "x").toString();
+   const eq0 = nerdamer(`${L}-(${R})`)
+  .expand()
+  .toString();
 
       setHint("Advanced solver used (Algebra 2+).");
       setSteps([
