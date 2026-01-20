@@ -1,352 +1,280 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import nerdamer from "nerdamer";
 import "nerdamer/Algebra";
 import "nerdamer/Solve";
-import Tesseract from "tesseract.js";
 
 type ViewMode = "none" | "hint" | "steps" | "full";
 
-function normalizeInput(s: string) {
-  let x = s.replace(/\s+/g, "");
-
-  // Replace common OCR mistakes:
-  x = x
-    .replace(/÷/g, "/")
-    .replace(/×/g, "*")
-    .replace(/—|–/g, "-")
-    .replace(/=/g, "=");
-
-  // Make implicit multiplication explicit for nerdamer:
-  x = x
-    .replace(/(\d)([a-zA-Z])/g, "$1*$2")
-    .replace(/(\))(\()/g, "$1*$2")
-    .replace(/([a-zA-Z])(\()/g, "$1*$2")
-    .replace(/(\))([a-zA-Z])/g, "$1*$2");
-
-  return x;
+function normalizeInput(raw: string) {
+  return (
+    raw
+      .trim()
+      // common symbol cleanups
+      .replace(/\u2212/g, "-") // unicode minus
+      .replace(/×/g, "*")
+      .replace(/÷/g, "/")
+      // remove spaces
+      .replace(/\s+/g, "")
+  );
 }
 
-function cleanOCRTextToEquation(text: string) {
-  // Keep it simple: pull the most "equation-looking" line.
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  // Prefer a line with "="
-  const eqLine = lines.find((l) => l.includes("="));
-  const best = eqLine ?? lines[0] ?? "";
-
-  // Remove spaces, fix common OCR symbol issues
-  return best
-    .replace(/\s+/g, "")
-    .replace(/÷/g, "/")
-    .replace(/×/g, "*")
-    .replace(/—|–/g, "-");
+function prettyEq(s: string) {
+  return s
+    .replace(/\*/g, "·")
+    .replace(/-/g, "−");
 }
 
-export default function Home() {
-  const [problem, setProblem] = useState("");
-  const [hint, setHint] = useState("");
+export default function Page() {
+  const [problem, setProblem] = useState<string>("x^2-5x+6=0");
+  const [view, setView] = useState<ViewMode>("steps");
+
+  const [hint, setHint] = useState<string>("");
   const [steps, setSteps] = useState<string[]>([]);
-  const [answer, setAnswer] = useState("");
-  const [view, setView] = useState<ViewMode>("none");
+  const [answer, setAnswer] = useState<string>("");
+  const [error, setError] = useState<string>("");
 
-  const [ocrStatus, setOcrStatus] = useState<string>("");
-  const [ocrLoading, setOcrLoading] = useState(false);
+  const ui = useMemo(() => {
+    const cardBg = "#ffffff";
+    const pageBg = "#eef2f7";
+    const text = "#0f172a";
+    const muted = "#475569";
+    const border = "#cbd5e1";
+    const blue = "#2563eb";
+    const greenBg = "#dcfce7";
+    const greenBorder = "#22c55e";
+    const blueBg = "#dbeafe";
+    const blueBorder = "#3b82f6";
+    const warnBg = "#fee2e2";
+    const warnBorder = "#ef4444";
+    const panelBg = "#f8fafc";
+    return {
+      cardBg,
+      pageBg,
+      text,
+      muted,
+      border,
+      blue,
+      greenBg,
+      greenBorder,
+      blueBg,
+      blueBorder,
+      warnBg,
+      warnBorder,
+      panelBg,
+    };
+  }, []);
 
-  function isAdvanced(p: string) {
-    const s = normalizeInput(p);
-    return s.includes("^") || s.includes("(") || s.includes(")") || s.includes("*") || s.includes("/");
-  }
-
-  function solveAdvanced(p: string) {
-    try {
-      const cleaned = normalizeInput(p);
-      const [L, R] = cleaned.split("=");
-      if (!L || !R) {
-        setHint("Make sure it looks like: left = right");
-        return;
-      }
-
-   const eq0 = nerdamer(`${L}-(${R})`)
-  .expand()
-  .toString();
-
-      setHint("Advanced solver used (Algebra 2+).");
-      setSteps([
-        `Start: ${L} = ${R}`,
-        `Move everything to one side: ${eq0} = 0`,
-        `Solve for x.`,
-      ]);
-      setAnswer(`Solutions: ${sols}`);
-    } catch {
-      setHint("Couldn't solve this advanced equation.");
-    }
+  function clearOutput() {
+    setHint("");
+    setSteps([]);
+    setAnswer("");
+    setError("");
   }
 
   function handleSolve() {
-    setHint("");
-    setSteps([]);
-    setAnswer("");
-    setView("none");
+    clearOutput();
 
-    const raw = problem.trim();
-    if (!raw) {
-      setHint("Type something first (example: 2x + 3 = 7).");
-      setView("hint");
+    const cleaned = normalizeInput(problem);
+    if (!cleaned) {
+      setError("Type an equation, like 2x+7=25 or x^2-5x+6=0");
       return;
     }
-
-    if (!raw.includes("=")) {
-      setHint("Please enter an equation with '=' (example: 2x + 3 = 7).");
-      setView("hint");
-      return;
-    }
-
-    if (isAdvanced(raw)) {
-      solveAdvanced(raw);
-      setView("hint");
-      return;
-    }
-
-    // Simple Algebra 1: ax + b = c
-    try {
-      const clean = raw.replace(/\s/g, "");
-      const [left, right] = clean.split("=");
-
-      const m = left.match(/^([0-9]*)x([\+\-][0-9]+)?$/);
-      if (!m) {
-        setHint(
-          "Try something like 5x-9=81 or 2x+7=25. For harder ones (parentheses/powers), it will switch to Algebra 2 mode."
-        );
-        setView("hint");
-        return;
-      }
-
-      const a = m[1] === "" ? 1 : Number(m[1]);
-      const b = m[2] ? Number(m[2]) : 0;
-      const c = Number(right);
-
-      if (Number.isNaN(c)) {
-        setHint("Right side must be a number.");
-        setView("hint");
-        return;
-      }
-
-      const x = (c - b) / a;
-
-      setHint("Goal: isolate x. Move the constant, then divide.");
-      setSteps([
-        `Start: ${left} = ${right}`,
-        b !== 0
-          ? `Subtract ${b} from both sides → ${a}x = ${c - b}`
-          : `No constant to move → ${a}x = ${c}`,
-        `Divide both sides by ${a} → x = ${x}`,
-      ]);
-      setAnswer(`x = ${x}`);
-      setView("hint");
-    } catch {
-      setHint("Couldn't solve this equation.");
-      setView("hint");
-    }
-  }
-
-  async function handleImageUpload(file: File) {
-    setOcrLoading(true);
-    setOcrStatus("Reading image...");
-    setHint("");
-    setSteps([]);
-    setAnswer("");
-    setView("none");
 
     try {
-      const {
-        data: { text },
-      } = await Tesseract.recognize(file, "eng", {
-        logger: (m) => {
-          if (m.status === "recognizing text") {
-            setOcrStatus(`OCR: ${Math.round((m.progress ?? 0) * 100)}%`);
-          } else {
-            setOcrStatus(`OCR: ${m.status}`);
-          }
-        },
-      });
+      let left = "";
+      let right = "";
 
-      const eq = cleanOCRTextToEquation(text);
-      if (!eq) {
-        setOcrStatus("OCR finished, but I couldn't find an equation.");
-        return;
+      if (cleaned.includes("=")) {
+        const parts = cleaned.split("=");
+        if (parts.length !== 2 || parts[0] === "" || parts[1] === "") {
+          setError("Please enter a valid equation with ONE '=' sign.");
+          return;
+        }
+        left = parts[0];
+        right = parts[1];
+      } else {
+        // If they don't type '=', assume expression = 0
+        left = cleaned;
+        right = "0";
       }
 
-      setProblem(eq);
-      setOcrStatus("OCR finished ✅ (Equation placed into the box)");
-      // Optional: auto-solve after OCR:
-      // setTimeout(handleSolve, 50);
-    } catch {
-      setOcrStatus("OCR failed. Try a clearer photo (good light, straight, close-up).");
-    } finally {
-      setOcrLoading(false);
+      // Build equation: left - (right) = 0
+      const eq0 = nerdamer(`${left}-(${right})`).expand().toString();
+
+      // Solve for x (this is the IMPORTANT part that fixes your Vercel error)
+      const sols = nerdamer.solve(eq0, "x").toString();
+
+      // Set hint + steps
+      setHint("Tip: Move everything to one side (so it equals 0), then solve for x.");
+
+      const stepList: string[] = [];
+      stepList.push(`Start: ${prettyEq(left)} = ${prettyEq(right)}`);
+      stepList.push(`Move everything to one side: ${prettyEq(eq0)} = 0`);
+      stepList.push(`Solve for x: x = ${prettyEq(sols)}`);
+
+      setSteps(stepList);
+      setAnswer(`Solutions: ${sols}`);
+    } catch (e: any) {
+      // Nerdamer throws different shapes of errors; keep message readable
+      setError("Couldn’t solve that. Try rewriting it more clearly (use ^ for powers, * for multiply).");
     }
   }
-
-  // ----- Styles (forced light theme)
-  const page: React.CSSProperties = {
-    minHeight: "100vh",
-    background: "linear-gradient(180deg, #f4f8ff, #e9efff)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
-    colorScheme: "light",
-  };
-
-  const card: React.CSSProperties = {
-    width: "100%",
-    maxWidth: 820,
-    background: "#ffffff",
-    borderRadius: 18,
-    boxShadow: "0 20px 40px rgba(0,0,0,0.10)",
-    border: "1px solid #dbe4ff",
-  };
-
-  const chip = (active: boolean): React.CSSProperties => ({
-    padding: "8px 14px",
-    borderRadius: 999,
-    border: `2px solid ${active ? "#2563eb" : "#c7d2fe"}`,
-    background: active ? "#dbeafe" : "#eef2ff",
-    color: "#1e3a8a",
-    fontWeight: 700,
-    cursor: "pointer",
-  });
 
   return (
-    <div style={page}>
-      <div style={card}>
-        <div style={{ padding: 20, borderBottom: "1px solid #dbe4ff" }}>
-          <h1 style={{ margin: 0, color: "#1e3a8a" }}>Study Helper</h1>
-          <p style={{ marginTop: 6, color: "#334155", fontSize: 14 }}>
-            Type or take a photo • Algebra 1 → Algebra 2
-          </p>
+    <main
+      style={{
+        minHeight: "100vh",
+        background: ui.pageBg,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        color: ui.text,
+        fontFamily:
+          'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"',
+      }}
+    >
+      <div
+        style={{
+          width: "min(920px, 100%)",
+          background: ui.cardBg,
+          border: `1px solid ${ui.border}`,
+          borderRadius: 16,
+          boxShadow: "0 10px 30px rgba(15, 23, 42, 0.10)",
+          overflow: "hidden",
+        }}
+      >
+        <div style={{ padding: 18, borderBottom: `1px solid ${ui.border}` }}>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>Study Helper</div>
+          <div style={{ marginTop: 4, color: ui.muted, fontSize: 13 }}>
+            Bright + readable • Algebra 1 → Algebra 2
+          </div>
 
-          <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
             <input
               value={problem}
               onChange={(e) => setProblem(e.target.value)}
-              placeholder="Type: x^2-5x+6=0   or   5x-9=81"
+              placeholder="Type an equation (ex: 2x+7=25, x/4=30, x^2-5x+6=0)"
               style={{
-                flex: "1 1 340px",
-                padding: 12,
-                borderRadius: 12,
-                border: "2px solid #c7d2fe",
-                fontSize: 16,
-                color: "#0f172a",
-                background: "#ffffff",
+                flex: 1,
+                padding: "12px 12px",
+                borderRadius: 10,
+                border: `1px solid ${ui.border}`,
                 outline: "none",
+                fontSize: 15,
+                background: "#ffffff",
+                color: ui.text,
               }}
             />
-
             <button
               onClick={handleSolve}
               style={{
-                padding: "12px 18px",
-                borderRadius: 12,
+                padding: "12px 16px",
+                borderRadius: 10,
                 border: "none",
-                background: "#2563eb",
-                color: "white",
-                fontSize: 16,
-                fontWeight: 800,
                 cursor: "pointer",
+                background: ui.blue,
+                color: "#fff",
+                fontWeight: 700,
+                fontSize: 15,
               }}
             >
               Solve
             </button>
           </div>
 
-          {/* Photo upload */}
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <label
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            {(
+              [
+                ["hint", "Hint"],
+                ["steps", "Steps"],
+                ["full", "Full Solution"],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setView(k)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 999,
+                  border: `1px solid ${ui.border}`,
+                  cursor: "pointer",
+                  background: view === k ? "#e2e8f0" : "#ffffff",
+                  color: ui.text,
+                  fontWeight: 700,
+                  fontSize: 13,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            <button
+              onClick={() => setView("none")}
               style={{
-                display: "inline-block",
-                padding: "10px 14px",
-                borderRadius: 12,
-                border: "2px solid #c7d2fe",
-                background: "#eef2ff",
-                color: "#1e3a8a",
-                fontWeight: 800,
+                marginLeft: "auto",
+                padding: "8px 12px",
+                borderRadius: 999,
+                border: `1px solid ${ui.border}`,
                 cursor: "pointer",
+                background: view === "none" ? "#e2e8f0" : "#ffffff",
+                color: ui.text,
+                fontWeight: 700,
+                fontSize: 13,
               }}
             >
-              {ocrLoading ? "Reading..." : "Take/Upload Photo"}
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleImageUpload(file);
-                  e.currentTarget.value = "";
-                }}
-              />
-            </label>
-
-            <span style={{ color: "#475569", fontSize: 13 }}>
-              {ocrStatus || "Tip: take a straight, close-up photo with good light."}
-            </span>
-          </div>
-
-          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button onClick={() => setView("hint")} style={chip(view === "hint")}>
-              Hint
-            </button>
-            <button onClick={() => setView("steps")} style={chip(view === "steps")}>
-              Steps
-            </button>
-            <button onClick={() => setView("full")} style={chip(view === "full")}>
-              Full Solution
+              Hide
             </button>
           </div>
         </div>
 
-        <div style={{ padding: 20 }}>
-          {view === "none" && (
-            <p style={{ color: "#334155" }}>
-              You can type an equation or use a photo. Click <strong>Solve</strong>, then reveal Hint / Steps / Full Solution.
-            </p>
+        <div style={{ padding: 18, background: ui.panelBg }}>
+          {error && (
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                background: ui.warnBg,
+                border: `1px solid ${ui.warnBorder}`,
+                color: ui.text,
+                fontWeight: 700,
+                marginBottom: 12,
+              }}
+            >
+              {error}
+            </div>
           )}
 
           {(view === "hint" || view === "steps" || view === "full") && hint && (
             <div
               style={{
-                padding: 14,
+                padding: 12,
                 borderRadius: 12,
-                background: "#eef2ff",
-                borderLeft: "6px solid #2563eb",
-                color: "#0f172a",
+                background: ui.blueBg,
+                border: `1px solid ${ui.blueBorder}`,
+                color: ui.text,
                 marginBottom: 12,
               }}
             >
-              <strong>Hint:</strong> {hint}
+              <div style={{ fontWeight: 800, marginBottom: 4 }}>Hint</div>
+              <div style={{ color: ui.text, lineHeight: 1.6 }}>{hint}</div>
             </div>
           )}
 
           {(view === "steps" || view === "full") && steps.length > 0 && (
             <div
               style={{
-                padding: 14,
+                padding: 12,
                 borderRadius: 12,
-                background: "#f8fafc",
-                border: "1px solid #e2e8f0",
-                borderLeft: "6px solid #22c55e",
-                color: "#0f172a",
+                background: "#ffffff",
+                border: `1px solid ${ui.border}`,
+                color: ui.text,
                 marginBottom: 12,
               }}
             >
-              <strong>Steps</strong>
-              <ol style={{ marginTop: 10, paddingLeft: 20, lineHeight: 1.6 }}>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>Steps</div>
+              <ol style={{ margin: 0, paddingLeft: 18, color: ui.text, lineHeight: 1.8 }}>
                 {steps.map((s, i) => (
                   <li key={i}>{s}</li>
                 ))}
@@ -357,21 +285,26 @@ export default function Home() {
           {view === "full" && answer && (
             <div
               style={{
-                padding: 16,
+                padding: 14,
                 borderRadius: 12,
-                background: "#dcfce7",
-                border: "1px solid #bbf7d0",
-                borderLeft: "6px solid #16a34a",
-                color: "#065f46",
-                fontSize: 18,
-                fontWeight: 900,
+                background: ui.greenBg,
+                border: `1px solid ${ui.greenBorder}`,
+                color: ui.text,
+                fontWeight: 800,
+                fontSize: 16,
               }}
             >
               {answer}
             </div>
           )}
+
+          {view === "none" && (
+            <div style={{ color: ui.muted, fontSize: 14 }}>
+              Type an equation and click <b>Solve</b>. Then choose Hint / Steps / Full Solution.
+            </div>
+          )}
         </div>
       </div>
-    </div>
+    </main>
   );
 }
