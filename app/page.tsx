@@ -8,273 +8,246 @@ import "nerdamer/Solve";
 type ViewMode = "none" | "hint" | "steps" | "full";
 
 function normalizeInput(raw: string) {
-  return (
-    raw
-      .trim()
-      // common symbol cleanups
-      .replace(/\u2212/g, "-") // unicode minus
-      .replace(/×/g, "*")
-      .replace(/÷/g, "/")
-      // remove spaces
-      .replace(/\s+/g, "")
-  );
+  return raw
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[−–—]/g, "-")
+    .replace(/[×]/g, "*")
+    .replace(/[÷]/g, "/");
 }
 
-function prettyEq(s: string) {
-  return s
-    .replace(/\*/g, "·")
-    .replace(/-/g, "−");
+function isSimpleLinear(eq: string) {
+  // Very basic check: contains x, and not x^2 or higher powers, and not trig/log/etc.
+  const lowered = eq.toLowerCase();
+  if (!lowered.includes("x")) return false;
+  if (lowered.includes("x^")) return false;
+  if (/[a-wyz]/i.test(lowered.replace(/x/gi, ""))) return false; // other letters
+  if (lowered.includes("sin") || lowered.includes("cos") || lowered.includes("tan")) return false;
+  if (lowered.includes("log") || lowered.includes("ln") || lowered.includes("sqrt")) return false;
+  return true;
+}
+
+function safeSolveWithNerdamer(input: string) {
+  const steps: string[] = [];
+  const cleaned = normalizeInput(input);
+
+  if (!cleaned.includes("=")) {
+    return {
+      ok: false,
+      hint: `Please enter an equation like 2x+3=7 (include "=").`,
+      steps: [],
+      answer: "",
+    };
+  }
+
+  const [L, R] = cleaned.split("=");
+  if (!L || !R) {
+    return {
+      ok: false,
+      hint: `That "=" looks incomplete. Try something like x/4=30`,
+      steps: [],
+      answer: "",
+    };
+  }
+
+  // Build equation as "L-(R)" so we can solve L-R = 0
+  // (Avoid .simplify() to prevent the TS error you saw on Vercel)
+  const eq0 = nerdamer(`(${L})-(${R})`).expand().toString();
+
+  steps.push(`Start: ${L} = ${R}`);
+  steps.push(`Move everything to one side: (${L}) - (${R}) = 0`);
+  steps.push(`Expanded form: ${eq0} = 0`);
+  steps.push(`Solve for x`);
+
+  let solsRaw = "";
+  try {
+    solsRaw = nerdamer.solve(eq0, "x").toString(); // returns something like [2,3] or 9
+  } catch (e: any) {
+    return {
+      ok: false,
+      hint: `Couldn't solve that (check your equation formatting).`,
+      steps,
+      answer: "",
+    };
+  }
+
+  // Make it look nicer
+  const prettySols = solsRaw.startsWith("[") ? solsRaw : `[${solsRaw}]`;
+
+  return {
+    ok: true,
+    hint: isSimpleLinear(cleaned)
+      ? "Goal: isolate x (move terms, then divide)."
+      : "Advanced solver used (Algebra 1–2).",
+    steps,
+    answer: `Solutions: ${prettySols}`,
+  };
 }
 
 export default function Page() {
-  const [problem, setProblem] = useState<string>("x^2-5x+6=0");
-  const [view, setView] = useState<ViewMode>("steps");
-
-  const [hint, setHint] = useState<string>("");
+  const [problem, setProblem] = useState("x^2-5x+6=0");
+  const [hint, setHint] = useState("");
   const [steps, setSteps] = useState<string[]>([]);
-  const [answer, setAnswer] = useState<string>("");
-  const [error, setError] = useState<string>("");
+  const [answer, setAnswer] = useState("");
+  const [view, setView] = useState<ViewMode>("none");
+  const [error, setError] = useState("");
 
-  const ui = useMemo(() => {
-    const cardBg = "#ffffff";
-    const pageBg = "#eef2f7";
-    const text = "#0f172a";
-    const muted = "#475569";
-    const border = "#cbd5e1";
-    const blue = "#2563eb";
-    const greenBg = "#dcfce7";
-    const greenBorder = "#22c55e";
-    const blueBg = "#dbeafe";
-    const blueBorder = "#3b82f6";
-    const warnBg = "#fee2e2";
-    const warnBorder = "#ef4444";
-    const panelBg = "#f8fafc";
-    return {
-      cardBg,
-      pageBg,
-      text,
-      muted,
-      border,
-      blue,
-      greenBg,
-      greenBorder,
-      blueBg,
-      blueBorder,
-      warnBg,
-      warnBorder,
-      panelBg,
-    };
-  }, []);
+  const canShow = useMemo(() => view !== "none", [view]);
 
-  function clearOutput() {
+  function handleSolve() {
+    setError("");
     setHint("");
     setSteps([]);
     setAnswer("");
-    setError("");
-  }
 
-  function handleSolve() {
-    clearOutput();
+    const res = safeSolveWithNerdamer(problem);
 
-    const cleaned = normalizeInput(problem);
-    if (!cleaned) {
-      setError("Type an equation, like 2x+7=25 or x^2-5x+6=0");
+    if (!res.ok) {
+      setError(res.hint);
+      setView("none");
       return;
     }
 
-    try {
-      let left = "";
-      let right = "";
+    setHint(res.hint);
+    setSteps(res.steps);
+    setAnswer(res.answer);
 
-      if (cleaned.includes("=")) {
-        const parts = cleaned.split("=");
-        if (parts.length !== 2 || parts[0] === "" || parts[1] === "") {
-          setError("Please enter a valid equation with ONE '=' sign.");
-          return;
-        }
-        left = parts[0];
-        right = parts[1];
-      } else {
-        // If they don't type '=', assume expression = 0
-        left = cleaned;
-        right = "0";
-      }
-
-      // Build equation: left - (right) = 0
-      const eq0 = nerdamer(`${left}-(${right})`).expand().toString();
-
-      // Solve for x (this is the IMPORTANT part that fixes your Vercel error)
-      const sols = nerdamer.solve(eq0, "x").toString();
-
-      // Set hint + steps
-      setHint("Tip: Move everything to one side (so it equals 0), then solve for x.");
-
-      const stepList: string[] = [];
-      stepList.push(`Start: ${prettyEq(left)} = ${prettyEq(right)}`);
-      stepList.push(`Move everything to one side: ${prettyEq(eq0)} = 0`);
-      stepList.push(`Solve for x: x = ${prettyEq(sols)}`);
-
-      setSteps(stepList);
-      setAnswer(`Solutions: ${sols}`);
-    } catch (e: any) {
-      // Nerdamer throws different shapes of errors; keep message readable
-      setError("Couldn’t solve that. Try rewriting it more clearly (use ^ for powers, * for multiply).");
-    }
+    // Keep whatever tab they selected; if none, default to "full"
+    setView((prev) => (prev === "none" ? "full" : prev));
   }
 
   return (
     <main
       style={{
         minHeight: "100vh",
-        background: ui.pageBg,
+        padding: 24,
+        background: "linear-gradient(180deg, #f6f8ff 0%, #eef3ff 100%)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: 24,
-        color: ui.text,
+        color: "#0f172a",
         fontFamily:
-          'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"',
+          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
       }}
     >
       <div
         style={{
-          width: "min(920px, 100%)",
-          background: ui.cardBg,
-          border: `1px solid ${ui.border}`,
+          width: "min(780px, 92vw)",
+          background: "rgba(255,255,255,0.9)",
+          border: "1px solid rgba(15,23,42,0.08)",
           borderRadius: 16,
-          boxShadow: "0 10px 30px rgba(15, 23, 42, 0.10)",
+          boxShadow: "0 20px 60px rgba(15,23,42,0.12)",
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: 18, borderBottom: `1px solid ${ui.border}` }}>
+        <div style={{ padding: 18, borderBottom: "1px solid rgba(15,23,42,0.06)" }}>
           <div style={{ fontSize: 18, fontWeight: 800 }}>Study Helper</div>
-          <div style={{ marginTop: 4, color: ui.muted, fontSize: 13 }}>
-            Bright + readable • Algebra 1 → Algebra 2
+          <div style={{ fontSize: 12, color: "#475569", marginTop: 4 }}>
+            Bright • readable • Algebra 1 → Algebra 2
           </div>
+        </div>
 
-          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <div style={{ padding: 18 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <input
               value={problem}
               onChange={(e) => setProblem(e.target.value)}
-              placeholder="Type an equation (ex: 2x+7=25, x/4=30, x^2-5x+6=0)"
+              placeholder="Type an equation (ex: x/4=30 or x^2-5x+6=0)"
               style={{
                 flex: 1,
-                padding: "12px 12px",
-                borderRadius: 10,
-                border: `1px solid ${ui.border}`,
+                padding: "12px 14px",
+                borderRadius: 12,
+                border: "1px solid rgba(15,23,42,0.18)",
                 outline: "none",
-                fontSize: 15,
-                background: "#ffffff",
-                color: ui.text,
+                fontSize: 14,
+                background: "white",
               }}
             />
             <button
               onClick={handleSolve}
               style={{
                 padding: "12px 16px",
-                borderRadius: 10,
-                border: "none",
-                cursor: "pointer",
-                background: ui.blue,
-                color: "#fff",
+                borderRadius: 12,
+                border: "1px solid rgba(37,99,235,0.25)",
+                background: "#2563eb",
+                color: "white",
                 fontWeight: 700,
-                fontSize: 15,
+                cursor: "pointer",
               }}
             >
               Solve
             </button>
           </div>
 
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            {(
-              [
-                ["hint", "Hint"],
-                ["steps", "Steps"],
-                ["full", "Full Solution"],
-              ] as const
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setView(k)}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: `1px solid ${ui.border}`,
-                  cursor: "pointer",
-                  background: view === k ? "#e2e8f0" : "#ffffff",
-                  color: ui.text,
-                  fontWeight: 700,
-                  fontSize: 13,
-                }}
-              >
-                {label}
-              </button>
-            ))}
-            <button
-              onClick={() => setView("none")}
-              style={{
-                marginLeft: "auto",
-                padding: "8px 12px",
-                borderRadius: 999,
-                border: `1px solid ${ui.border}`,
-                cursor: "pointer",
-                background: view === "none" ? "#e2e8f0" : "#ffffff",
-                color: ui.text,
-                fontWeight: 700,
-                fontSize: 13,
-              }}
-            >
-              Hide
-            </button>
-          </div>
-        </div>
-
-        <div style={{ padding: 18, background: ui.panelBg }}>
           {error && (
             <div
               style={{
+                marginTop: 12,
                 padding: 12,
                 borderRadius: 12,
-                background: ui.warnBg,
-                border: `1px solid ${ui.warnBorder}`,
-                color: ui.text,
-                fontWeight: 700,
-                marginBottom: 12,
+                background: "#fff1f2",
+                border: "1px solid rgba(225,29,72,0.25)",
+                color: "#9f1239",
+                fontSize: 13,
+                fontWeight: 600,
               }}
             >
               {error}
             </div>
           )}
 
-          {(view === "hint" || view === "steps" || view === "full") && hint && (
+          <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {(["hint", "steps", "full"] as ViewMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setView(m)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(15,23,42,0.14)",
+                  background: view === m ? "#0f172a" : "white",
+                  color: view === m ? "white" : "#0f172a",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                {m === "hint" ? "Hint" : m === "steps" ? "Steps" : "Full Solution"}
+              </button>
+            ))}
+          </div>
+
+          {canShow && hint && (view === "hint" || view === "full") && (
             <div
               style={{
-                padding: 12,
-                borderRadius: 12,
-                background: ui.blueBg,
-                border: `1px solid ${ui.blueBorder}`,
-                color: ui.text,
-                marginBottom: 12,
+                marginTop: 14,
+                padding: 14,
+                borderRadius: 14,
+                background: "#eff6ff",
+                border: "1px solid rgba(37,99,235,0.20)",
+                borderLeft: "6px solid #2563eb",
+                color: "#0f172a",
               }}
             >
-              <div style={{ fontWeight: 800, marginBottom: 4 }}>Hint</div>
-              <div style={{ color: ui.text, lineHeight: 1.6 }}>{hint}</div>
+              <div style={{ fontWeight: 800, marginBottom: 6 }}>Hint</div>
+              <div style={{ color: "#1e293b", lineHeight: 1.5 }}>{hint}</div>
             </div>
           )}
 
-          {(view === "steps" || view === "full") && steps.length > 0 && (
+          {canShow && steps.length > 0 && (view === "steps" || view === "full") && (
             <div
               style={{
-                padding: 12,
-                borderRadius: 12,
-                background: "#ffffff",
-                border: `1px solid ${ui.border}`,
-                color: ui.text,
-                marginBottom: 12,
+                marginTop: 14,
+                padding: 14,
+                borderRadius: 14,
+                background: "#f0fdf4",
+                border: "1px solid rgba(34,197,94,0.22)",
+                borderLeft: "6px solid #22c55e",
+                color: "#0f172a",
               }}
             >
               <div style={{ fontWeight: 800, marginBottom: 8 }}>Steps</div>
-              <ol style={{ margin: 0, paddingLeft: 18, color: ui.text, lineHeight: 1.8 }}>
+              <ol style={{ margin: 0, paddingLeft: 18, color: "#1e293b", lineHeight: 1.7 }}>
                 {steps.map((s, i) => (
                   <li key={i}>{s}</li>
                 ))}
@@ -282,25 +255,20 @@ export default function Page() {
             </div>
           )}
 
-          {view === "full" && answer && (
+          {canShow && answer && (
             <div
               style={{
+                marginTop: 14,
                 padding: 14,
-                borderRadius: 12,
-                background: ui.greenBg,
-                border: `1px solid ${ui.greenBorder}`,
-                color: ui.text,
-                fontWeight: 800,
-                fontSize: 16,
+                borderRadius: 14,
+                background: "#ecfeff",
+                border: "1px solid rgba(6,182,212,0.22)",
+                borderLeft: "6px solid #06b6d4",
+                color: "#0f172a",
               }}
             >
-              {answer}
-            </div>
-          )}
-
-          {view === "none" && (
-            <div style={{ color: ui.muted, fontSize: 14 }}>
-              Type an equation and click <b>Solve</b>. Then choose Hint / Steps / Full Solution.
+              <div style={{ fontWeight: 900 }}>Answer</div>
+              <div style={{ marginTop: 6, fontSize: 15, color: "#0f172a" }}>{answer}</div>
             </div>
           )}
         </div>
